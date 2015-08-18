@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -14,9 +12,43 @@ pub enum Action<'a> {
     Join(&'a str),
 }
 
-type Step<'a> = Vec<Action<'a>>;
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step<'a> {
+    actions: Vec<Action<'a>>,
+}
 
-#[derive(Debug, PartialEq)]
+impl<'a> Step<'a> {
+    fn new(actions: Vec<Action<'a>>) -> Step<'a> {
+        Step { actions: actions }
+    }
+
+    fn is_filter(&self) -> bool {
+        self.actions.contains(&Action::Filter)
+    }
+
+    fn widest_filter_index(&self) -> Option<usize> {
+        for (i, action) in self.actions.iter().enumerate().rev() {
+            println!("--> i {}", i);
+            match action {
+                &Action::Filter => { return Some(i) },
+                _ => {}
+            }
+        };
+        return None
+    }
+
+    fn is_group(&self) -> bool {
+        for action in &self.actions {
+            match action {
+                &Action::Group(_) => { return true },
+                _ => {},
+            }
+        };
+        return false
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Col<'a> {
     actions: Vec<Action<'a>>,
 }
@@ -54,20 +86,21 @@ pub struct Query<'a> {
 }
 
 impl<'a> Query<'a> {
-    fn new(steps: Vec<Step<'a>>) -> Query<'a> {
+    fn new(step_vec: Vec<Vec<Action<'a>>>) -> Query<'a> {
+        let steps = step_vec.into_iter().map(|actions| Step::new(actions)).collect();
         Query { steps: steps }
     }
 
     fn width(&self) -> usize {
         match self.steps.last() {
-            Some(actions) => actions.len(),
+            Some(&Step { ref actions }) => actions.len(),
             None => 0
         }
     }
 
     fn col(&self, index: usize) -> Col<'a> {
         let actions = self.steps.iter().map(|step| {
-            match step.get(index) {
+            match step.actions.get(index) {
                 Some(action) => action.clone(),
                 None => Action::Empty,
             }
@@ -83,19 +116,45 @@ impl<'a> Query<'a> {
 
     fn optimize(&self) -> Query {
         let mut query = self.clone();
+
         for (i, col) in query.cols().iter().enumerate() {
             if col.is_empty() {
                 query.remove_col(i)
             }
         };
+
+        let mut filter_anchor = 0;
+        for (i, step) in query.steps.clone().iter().enumerate() {
+            if step.is_group() {
+                filter_anchor = i
+            }
+
+            if step.is_filter() {
+                for j in i..filter_anchor {
+                    if query.steps[j].actions.len() < (&query.steps[i].widest_filter_index().unwrap() - 1) {
+                        filter_anchor = j;
+                        break
+                    }
+                };
+                query.raise_step(i, filter_anchor)
+            }
+        };
+
         query
     }
 
     fn remove_col(&mut self, index: usize) {
         for step in &mut self.steps {
-            if index < step.len() {
-                step.remove(index);
+            if index < step.actions.len() {
+                step.actions.remove(index);
             }
+        }
+    }
+
+    fn raise_step(&mut self, index: usize, anchor: usize) {
+        let rows_to_move_up = (anchor + 2..index + 1).rev();
+        for i in rows_to_move_up {
+            self.steps.swap(i, i - 1)
         }
     }
 }
@@ -103,7 +162,7 @@ impl<'a> Query<'a> {
 impl<'a> fmt::Display for Query<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for step in &self.steps {
-            for action in step {
+            for action in &step.actions {
                 let string = format!("{:?}", action);
                 let col = format!("{:<11}", string);
                 try!(write!(f, "{}", col))
@@ -179,5 +238,27 @@ mod tests {
             vec![Action::Join("d"), Action::Name("b")],
             vec![Action::Select,    Action::Select],
             ]))
+    }
+
+    #[test]
+    fn optimize_will_move_filters_upwards() {
+        let query = Query::new(vec![
+            vec![Action::Name("a")],
+            vec![Action::Map],
+            vec![Action::Filter],
+            ]);
+        assert_eq!(query.optimize(), Query::new(vec![
+            vec![Action::Name("a")],
+            vec![Action::Filter],
+            vec![Action::Map],
+            ]))
+    }
+
+    #[test]
+    fn step_can_find_the_widest_filter_action() {
+        let step = Step::new(vec![
+            Action::None, Action::Filter, Action::Filter, Action::None,
+            ]);
+        assert_eq!(step.widest_filter_index().unwrap(), 2)
     }
 }
